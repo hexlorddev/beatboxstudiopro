@@ -1,29 +1,49 @@
 {
   "expo": {
-    "name": "BeatBox Studio",
-    "slug": "beatbox-studio-app",
+    "name": "BeatBox Pro",
+    "slug": "beatbox-pro",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
-    "newArchEnabled": true,
+    "userInterfaceStyle": "dark",
     "splash": {
-      "image": "./assets/splash-icon.png",
+      "image": "./assets/splash.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#0f172a"
     },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.dinethnethasara.beatbox",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "This app uses the microphone to record audio patterns.",
+        "UIBackgroundModes": ["audio"]
+      }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
-      }
+        "backgroundColor": "#0f172a"
+      },
+      "package": "com.dinethnethasara.beatbox",
+      "permissions": [
+        "RECORD_AUDIO",
+        "WRITE_EXTERNAL_STORAGE",
+        "READ_EXTERNAL_STORAGE"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
-    "description": "Create and perform amazing beatbox rhythms with recording and playback features"
+    "plugins": [
+      [
+        "expo-av",
+        {
+          "microphonePermission": "Allow BeatBox Pro to record audio for creating beat patterns."
+        }
+      ]
+    ]
   }
 }
