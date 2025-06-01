@@ -2,51 +2,67 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   TouchableOpacity,
-  Dimensions,
   ScrollView,
+  StyleSheet,
+  Dimensions,
   TextInput,
   Modal,
-  Animated,
+  Alert,
   StatusBar,
+  Animated,
   SafeAreaView,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Ionicons } from '@expo/vector-icons';
-import { Audio } from 'expo-av';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as Haptics from 'expo-haptics';
-import { toast } from 'sonner-native';
+import { Audio } from 'expo-av';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
+import { Ionicons } from '@expo/vector-icons';
 
-const { width, height } = Dimensions.get('window');
+const { width: screenWidth } = Dimensions.get('window');
 
 interface BeatPattern {
   id: string;
   name: string;
   pattern: Array<{ padIndex: number; timestamp: number }>;
   duration: number;
+  bpm: number;
 }
 
 interface Sound {
   name: string;
-  icon: string;
-  gradient: string[];
-  audio?: Audio.Sound;
+  icon: keyof typeof Ionicons.glyphMap;
+  colors: string[];
+  sound?: Audio.Sound;
+  category: string;
 }
 
 const SOUNDS: Sound[] = [
-  { name: 'Kick', icon: 'radio-button-on', gradient: ['#FF6B6B', '#FF8E8E'] },
-  { name: 'Snare', icon: 'ellipse', gradient: ['#4ECDC4', '#44C6BD'] },
-  { name: 'HiHat', icon: 'triangle', gradient: ['#45B7D1', '#4A90E2'] },
-  { name: 'Crash', icon: 'star', gradient: ['#F7B733', '#FFC93C'] },
-  { name: 'Bass', icon: 'square', gradient: ['#A855F7', '#C084FC'] },
-  { name: 'Synth', icon: 'diamond', gradient: ['#EC4899', '#F472B6'] },
-  { name: 'Vocal', icon: 'mic', gradient: ['#EF4444', '#F87171'] },
-  { name: 'FX', icon: 'flash', gradient: ['#10B981', '#34D399'] },
+  // Drums
+  { name: 'Kick', icon: 'radio', colors: ['#FF6B6B', '#FF8E8E'], category: 'drums' },
+  { name: 'Snare', icon: 'disc', colors: ['#4ECDC4', '#44C6BD'], category: 'drums' },
+  { name: 'HiHat', icon: 'flash', colors: ['#45B7D1', '#4A90E2'], category: 'drums' },
+  { name: 'Crash', icon: 'pulse', colors: ['#F7B733', '#FFC93C'], category: 'drums' },
+  { name: 'Tom', icon: 'radio-outline', colors: ['#8B5CF6', '#A78BFA'], category: 'drums' },
+  { name: 'Ride', icon: 'disc-outline', colors: ['#06B6D4', '#67E8F9'], category: 'drums' },
+  
+  // Bass & Synth
+  { name: 'Bass', icon: 'volume-high', colors: ['#A855F7', '#C084FC'], category: 'bass' },
+  { name: 'SubBass', icon: 'pulse-outline', colors: ['#7C3AED', '#8B5CF6'], category: 'bass' },
+  { name: 'Synth', icon: 'musical-notes', colors: ['#EC4899', '#F472B6'], category: 'synth' },
+  { name: 'Lead', icon: 'flash-outline', colors: ['#F59E0B', '#FBBF24'], category: 'synth' },
+  { name: 'Pad', icon: 'pulse', colors: ['#10B981', '#34D399'], category: 'synth' },
+  { name: 'Arp', icon: 'musical-note', colors: ['#EF4444', '#F87171'], category: 'synth' },
+  
+  // Vocal & FX
+  { name: 'Vocal', icon: 'mic', colors: ['#EF4444', '#F87171'], category: 'vocal' },
+  { name: 'Choir', icon: 'headset', colors: ['#8B5CF6', '#A78BFA'], category: 'vocal' },
+  { name: 'FX', icon: 'flash', colors: ['#10B981', '#34D399'], category: 'fx' },
+  { name: 'Sweep', icon: 'pulse', colors: ['#06B6D4', '#67E8F9'], category: 'fx' },
 ];
 
-export default function HomeScreen() {
+export default function EnhancedBeatBox() {
   const [sounds, setSounds] = useState<Sound[]>(SOUNDS);
   const [isRecording, setIsRecording] = useState(false);
   const [recordedPattern, setRecordedPattern] = useState<Array<{ padIndex: number; timestamp: number }>>([]);
@@ -56,34 +72,46 @@ export default function HomeScreen() {
   const [patternName, setPatternName] = useState('');
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentPage, setCurrentPage] = useState('beatbox');
+  const [volume, setVolume] = useState(0.8);
+  const [isMuted, setIsMuted] = useState(false);
+  const [bpm, setBpm] = useState(120);
+  const [selectedCategory, setSelectedCategory] = useState('all');
   
-  // Animation refs
-  const padAnimations = useRef(SOUNDS.map(() => new Animated.Value(1))).current;
-  const recordingPulse = useRef(new Animated.Value(1)).current;
+  // Animation states
+  const [activePads, setActivePads] = useState<Set<number>>(new Set());
   const beatVisualization = useRef(new Animated.Value(0)).current;
+  const recordingPulse = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
-    loadSounds();
+    setupAudio();
     loadSavedPatterns();
     startRecordingAnimation();
+    
+    return () => {
+      // Cleanup audio resources
+      sounds.forEach(sound => {
+        if (sound.sound) {
+          sound.sound.unloadAsync();
+        }
+      });
+    };
   }, []);
 
-  const loadSounds = async () => {
+  const setupAudio = async () => {
     try {
-      const updatedSounds = await Promise.all(
-        SOUNDS.map(async (sound, index) => {
-          // Using placeholder audio URLs for demo
-          const { sound: audioSound } = await Audio.Sound.createAsync(
-            { uri: `https://api.a0.dev/assets/audio/${sound.name.toLowerCase()}.mp3` },
-            { shouldPlay: false }
-          );
-          return { ...sound, audio: audioSound };
-        })
-      );
-      setSounds(updatedSounds);
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        staysActiveInBackground: true,
+        playsInSilentModeIOS: true,
+        shouldDuckAndroid: true,
+        playThroughEarpieceAndroid: false,
+      });
+
+      // In a real app, load actual sound files here
+      // For demo purposes, we'll use system sounds or generate tones
+      console.log('Audio system initialized');
     } catch (error) {
-      // Fallback for demo - sounds will still work with visual feedback
-      console.log('Audio loading skipped for demo');
+      console.error('Error setting up audio:', error);
     }
   };
 
@@ -94,73 +122,82 @@ export default function HomeScreen() {
         setSavedPatterns(JSON.parse(patterns));
       }
     } catch (error) {
-      console.log('Error loading patterns:', error);
+      console.error('Error loading patterns:', error);
     }
   };
 
   const startRecordingAnimation = () => {
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(recordingPulse, {
-          toValue: 1.2,
-          duration: 800,
-          useNativeDriver: true,
-        }),
-        Animated.timing(recordingPulse, {
-          toValue: 1,
-          duration: 800,
-          useNativeDriver: true,
-        }),
-      ])
-    ).start();
+    if (isRecording) {
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(recordingPulse, {
+            toValue: 1.2,
+            duration: 800,
+            useNativeDriver: true,
+          }),
+          Animated.timing(recordingPulse, {
+            toValue: 1,
+            duration: 800,
+            useNativeDriver: true,
+          }),
+        ])
+      ).start();
+    } else {
+      recordingPulse.setValue(1);
+    }
   };
 
-  const playSound = async (index: number) => {
-    try {
-      // Haptic feedback
-      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-      
-      // Visual animation
-      Animated.sequence([
-        Animated.timing(padAnimations[index], {
-          toValue: 0.9,
-          duration: 100,
-          useNativeDriver: true,
-        }),
-        Animated.timing(padAnimations[index], {
-          toValue: 1,
-          duration: 100,
-          useNativeDriver: true,
-        }),
-      ]).start();
+  useEffect(() => {
+    startRecordingAnimation();
+  }, [isRecording]);
 
-      // Beat visualization
+  const playSound = async (index: number) => {
+    // Visual feedback
+    setActivePads(prev => new Set([...prev, index]));
+    setTimeout(() => {
+      setActivePads(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(index);
+        return newSet;
+      });
+    }, 150);
+
+    // Beat visualization
+    Animated.sequence([
       Animated.timing(beatVisualization, {
         toValue: 1,
         duration: 100,
-        useNativeDriver: true,
-      }).start(() => {
-        Animated.timing(beatVisualization, {
-          toValue: 0,
-          duration: 400,
-          useNativeDriver: true,
-        }).start();
-      });
+        useNativeDriver: false,
+      }),
+      Animated.timing(beatVisualization, {
+        toValue: 0,
+        duration: 400,
+        useNativeDriver: false,
+      }),
+    ]).start();
 
-      // Play audio if available
-      const sound = sounds[index];
-      if (sound.audio) {
-        await sound.audio.replayAsync();
+    // Play sound (in a real app, you would play actual audio files)
+    if (!isMuted) {
+      try {
+        // For demo purposes, we'll use system sounds or vibration
+        // In a real app, load and play actual sound files
+        console.log(`Playing ${sounds[index].name} at volume ${volume}`);
+        
+        // You would load and play actual sound files like this:
+        // const { sound } = await Audio.Sound.createAsync(
+        //   require('./assets/sounds/kick.wav')
+        // );
+        // await sound.setVolumeAsync(volume);
+        // await sound.playAsync();
+      } catch (error) {
+        console.error('Error playing sound:', error);
       }
+    }
 
-      // Record if recording is active
-      if (isRecording) {
-        const timestamp = Date.now() - recordStartTime;
-        setRecordedPattern(prev => [...prev, { padIndex: index, timestamp }]);
-      }
-
-    } catch (error) {
-      console.log('Error playing sound:', error);
+    // Record if recording is active
+    if (isRecording) {
+      const timestamp = Date.now() - recordStartTime;
+      setRecordedPattern(prev => [...prev, { padIndex: index, timestamp }]);
     }
   };
 
@@ -169,20 +206,17 @@ export default function HomeScreen() {
       setIsRecording(false);
       if (recordedPattern.length > 0) {
         setShowSaveModal(true);
-      } else {
-        toast.success('Recording stopped');
       }
     } else {
       setIsRecording(true);
       setRecordedPattern([]);
       setRecordStartTime(Date.now());
-      toast.success('Recording started! Tap pads to record pattern');
     }
   };
 
   const savePattern = async () => {
     if (!patternName.trim()) {
-      toast.error('Please enter a pattern name');
+      Alert.alert('Error', 'Please enter a pattern name');
       return;
     }
 
@@ -192,6 +226,7 @@ export default function HomeScreen() {
       pattern: recordedPattern,
       duration: recordedPattern.length > 0 ? 
         recordedPattern[recordedPattern.length - 1].timestamp + 1000 : 1000,
+      bpm: bpm,
     };
 
     try {
@@ -200,9 +235,10 @@ export default function HomeScreen() {
       setSavedPatterns(updatedPatterns);
       setShowSaveModal(false);
       setPatternName('');
-      toast.success(`Pattern "${newPattern.name}" saved!`);
+      Alert.alert('Success', 'Pattern saved successfully!');
     } catch (error) {
-      toast.error('Error saving pattern');
+      console.error('Error saving pattern:', error);
+      Alert.alert('Error', 'Failed to save pattern');
     }
   };
 
@@ -210,186 +246,289 @@ export default function HomeScreen() {
     if (isPlaying) return;
     
     setIsPlaying(true);
-    toast.success(`Playing "${pattern.name}"`);
 
     for (const beat of pattern.pattern) {
       setTimeout(() => {
         playSound(beat.padIndex);
-      }, beat.timestamp);
+      }, beat.timestamp * (120 / pattern.bpm));
     }
 
     setTimeout(() => {
       setIsPlaying(false);
-    }, pattern.duration);
+    }, pattern.duration * (120 / pattern.bpm));
   };
 
   const deletePattern = async (patternId: string) => {
+    Alert.alert(
+      'Delete Pattern',
+      'Are you sure you want to delete this pattern?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const updatedPatterns = savedPatterns.filter(p => p.id !== patternId);
+              await AsyncStorage.setItem('beatPatterns', JSON.stringify(updatedPatterns));
+              setSavedPatterns(updatedPatterns);
+            } catch (error) {
+              console.error('Error deleting pattern:', error);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const exportPattern = async (pattern: BeatPattern) => {
     try {
-      const updatedPatterns = savedPatterns.filter(p => p.id !== patternId);
-      await AsyncStorage.setItem('beatPatterns', JSON.stringify(updatedPatterns));
-      setSavedPatterns(updatedPatterns);
-      toast.success('Pattern deleted');
+      const patternData = JSON.stringify(pattern, null, 2);
+      const fileName = `${pattern.name.replace(/\s+/g, '_')}_pattern.json`;
+      const fileUri = FileSystem.documentDirectory + fileName;
+      
+      await FileSystem.writeAsStringAsync(fileUri, patternData);
+      
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(fileUri);
+      } else {
+        Alert.alert('Success', `Pattern exported to ${fileName}`);
+      }
     } catch (error) {
-      toast.error('Error deleting pattern');
+      console.error('Error exporting pattern:', error);
+      Alert.alert('Error', 'Failed to export pattern');
     }
   };
 
+  const filteredSounds = selectedCategory === 'all' 
+    ? sounds 
+    : sounds.filter(s => s.category === selectedCategory);
+
+  const categories = ['all', 'drums', 'bass', 'synth', 'vocal', 'fx'];
+
   const renderBeatBox = () => (
-    <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+    <SafeAreaView style={styles.container}>
+      <StatusBar barStyle="light-content" backgroundColor="#1e1b4b" />
+      
       {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>BeatBox</Text>
-        <Text style={styles.headerSubtitle}>Create amazing beats</Text>
+        <Text style={styles.title}>BeatBox Pro</Text>
+        <Text style={styles.subtitle}>by Dineth Nethsara</Text>
+        <Text style={styles.description}>Create amazing beats with professional tools</Text>
         
         {/* Beat Visualization */}
-        <Animated.View 
-          style={[
-            styles.beatVisualization,
-            {
-              opacity: beatVisualization,
-              transform: [{ scaleX: beatVisualization.interpolate({
-                inputRange: [0, 1],
-                outputRange: [0.1, 1],
-              })}]
-            }
-          ]}
-        />
-      </View>
-
-      {/* Sound Pads */}
-      <View style={styles.padsContainer}>
-        {sounds.map((sound, index) => (
+        <View style={styles.visualizationContainer}>
           <Animated.View
-            key={index}
             style={[
-              styles.padWrapper,
-              { transform: [{ scale: padAnimations[index] }] }
+              styles.visualizationBar,
+              {
+                width: beatVisualization.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: ['0%', '100%'],
+                }),
+              },
             ]}
-          >
-            <TouchableOpacity
-              onPress={() => playSound(index)}
-              activeOpacity={0.8}
-            >
-              <LinearGradient
-                colors={sound.gradient}
-                style={styles.pad}
-              >
-                <Ionicons 
-                  name={sound.icon as any} 
-                  size={32} 
-                  color="white" 
-                />
-                <Text style={styles.padText}>{sound.name}</Text>
-              </LinearGradient>
-            </TouchableOpacity>
-          </Animated.View>
-        ))}
+          />
+        </View>
       </View>
 
       {/* Controls */}
-      <View style={styles.controlsContainer}>
-        <TouchableOpacity
-          onPress={toggleRecording}
-          style={styles.controlButton}
-        >
-          <Animated.View
+      <View style={styles.controls}>
+        <View style={styles.controlGroup}>
+          <TouchableOpacity
+            onPress={() => setIsMuted(!isMuted)}
+            style={styles.controlButton}
+          >
+            <Ionicons
+              name={isMuted ? 'volume-mute' : 'volume-high'}
+              size={20}
+              color="white"
+            />
+          </TouchableOpacity>
+          <Text style={styles.controlLabel}>Vol: {Math.round(volume * 100)}</Text>
+        </View>
+        
+        <View style={styles.controlGroup}>
+          <Text style={styles.controlLabel}>BPM: {bpm}</Text>
+        </View>
+      </View>
+
+      {/* Category Filter */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.categoryContainer}
+        contentContainerStyle={styles.categoryContent}
+      >
+        {categories.map(category => (
+          <TouchableOpacity
+            key={category}
+            onPress={() => setSelectedCategory(category)}
             style={[
-              styles.recordButton,
-              isRecording && { transform: [{ scale: recordingPulse }] }
+              styles.categoryButton,
+              selectedCategory === category && styles.categoryButtonActive
             ]}
           >
-            <Ionicons 
-              name={isRecording ? "stop" : "radio-button-on"} 
-              size={24} 
-              color="white" 
+            <Text style={[
+              styles.categoryText,
+              selectedCategory === category && styles.categoryTextActive
+            ]}>
+              {category.charAt(0).toUpperCase() + category.slice(1)}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+
+      {/* Sound Pads */}
+      <ScrollView style={styles.padsContainer} showsVerticalScrollIndicator={false}>
+        <View style={styles.padsGrid}>
+          {filteredSounds.map((sound, index) => {
+            const originalIndex = sounds.findIndex(s => s.name === sound.name);
+            const isActive = activePads.has(originalIndex);
+            
+            return (
+              <TouchableOpacity
+                key={sound.name}
+                onPress={() => playSound(originalIndex)}
+                style={[styles.pad, isActive && styles.padActive]}
+              >
+                <LinearGradient
+                  colors={sound.colors}
+                  style={styles.padGradient}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                >
+                  <View style={styles.padContent}>
+                    <Ionicons name={sound.icon} size={24} color="white" />
+                    <Text style={styles.padText}>{sound.name}</Text>
+                  </View>
+                  {isActive && <View style={styles.padOverlay} />}
+                </LinearGradient>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      </ScrollView>
+
+      {/* Recording Controls */}
+      <View style={styles.recordingControls}>
+        <Animated.View style={{ transform: [{ scale: recordingPulse }] }}>
+          <TouchableOpacity
+            onPress={toggleRecording}
+            style={[
+              styles.recordButton,
+              isRecording ? styles.recordButtonStop : styles.recordButtonRecord
+            ]}
+          >
+            <Ionicons
+              name={isRecording ? 'stop' : 'mic'}
+              size={24}
+              color="white"
             />
-          </Animated.View>
-          <Text style={styles.controlText}>
-            {isRecording ? 'STOP' : 'REC'}
-          </Text>
-        </TouchableOpacity>
+            <Text style={styles.recordButtonText}>
+              {isRecording ? 'STOP' : 'RECORD'}
+            </Text>
+          </TouchableOpacity>
+        </Animated.View>
 
         <TouchableOpacity
           onPress={() => setCurrentPage('patterns')}
-          style={styles.controlButton}
+          style={styles.patternsButton}
         >
-          <View style={styles.patternsButton}>
-            <Ionicons name="library" size={24} color="white" />
-          </View>
-          <Text style={styles.controlText}>PATTERNS</Text>
+          <Ionicons name="library" size={24} color="white" />
+          <Text style={styles.recordButtonText}>PATTERNS</Text>
         </TouchableOpacity>
       </View>
 
-      {/* Saved Patterns Preview */}
+      {/* Recent Patterns Preview */}
       {savedPatterns.length > 0 && (
-        <View style={styles.patternsPreview}>
-          <Text style={styles.sectionTitle}>Recent Patterns</Text>
+        <View style={styles.recentPatterns}>
+          <Text style={styles.recentTitle}>Recent Patterns</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-            {savedPatterns.slice(-3).map((pattern) => (
+            {savedPatterns.slice(-5).map((pattern) => (
               <TouchableOpacity
                 key={pattern.id}
                 onPress={() => playPattern(pattern)}
-                style={styles.patternCard}
                 disabled={isPlaying}
+                style={[styles.recentPattern, isPlaying && styles.disabled]}
               >
                 <LinearGradient
-                  colors={['#667eea', '#764ba2']}
-                  style={styles.patternCardGradient}
+                  colors={['#8B5CF6', '#6366F1']}
+                  style={styles.recentPatternGradient}
                 >
                   <Ionicons name="play" size={16} color="white" />
-                  <Text style={styles.patternCardText}>{pattern.name}</Text>
+                  <Text style={styles.recentPatternText}>{pattern.name}</Text>
                 </LinearGradient>
               </TouchableOpacity>
             ))}
           </ScrollView>
         </View>
       )}
-    </ScrollView>
+
+      {/* Footer */}
+      <View style={styles.footer}>
+        <Text style={styles.footerText}>Powered by A0 Assets • © 2025 Dineth Nethsara</Text>
+        <Text style={styles.footerSubText}>Professional Beat Making Experience</Text>
+      </View>
+    </SafeAreaView>
   );
 
   const renderPatterns = () => (
-    <View style={styles.container}>
+    <SafeAreaView style={styles.container}>
+      <StatusBar barStyle="light-content" backgroundColor="#1e1b4b" />
+      
+      {/* Header */}
       <View style={styles.patternsHeader}>
         <TouchableOpacity
           onPress={() => setCurrentPage('beatbox')}
           style={styles.backButton}
         >
-          <Ionicons name="arrow-back" size={24} color="#333" />
+          <Ionicons name="arrow-back" size={24} color="white" />
         </TouchableOpacity>
         <Text style={styles.patternsTitle}>Saved Patterns</Text>
+        <View style={styles.patternCount}>
+          <Text style={styles.patternCountText}>{savedPatterns.length} patterns</Text>
+        </View>
       </View>
 
+      {/* Patterns List */}
       <ScrollView style={styles.patternsList}>
         {savedPatterns.length === 0 ? (
           <View style={styles.emptyState}>
-            <Ionicons name="musical-notes-outline" size={64} color="#ccc" />
-            <Text style={styles.emptyText}>No patterns saved yet</Text>
-            <Text style={styles.emptySubtext}>Record some beats to get started!</Text>
+            <Ionicons name="musical-notes" size={64} color="#64748b" />
+            <Text style={styles.emptyTitle}>No patterns saved yet</Text>
+            <Text style={styles.emptySubtitle}>Record some beats to get started!</Text>
           </View>
         ) : (
           savedPatterns.map((pattern) => (
-            <View key={pattern.id} style={styles.patternItem}>
+            <View key={pattern.id} style={styles.patternCard}>
               <LinearGradient
-                colors={['#667eea', '#764ba2']}
-                style={styles.patternItemGradient}
+                colors={['rgba(139, 92, 246, 0.2)', 'rgba(99, 102, 241, 0.2)']}
+                style={styles.patternCardGradient}
               >
                 <View style={styles.patternInfo}>
                   <Text style={styles.patternName}>{pattern.name}</Text>
                   <Text style={styles.patternDetails}>
-                    {pattern.pattern.length} beats • {Math.round(pattern.duration / 1000)}s
+                    {pattern.pattern.length} beats • {Math.round(pattern.duration / 1000)}s • {pattern.bpm} BPM
                   </Text>
                 </View>
                 <View style={styles.patternActions}>
                   <TouchableOpacity
                     onPress={() => playPattern(pattern)}
-                    style={styles.playButton}
                     disabled={isPlaying}
+                    style={[styles.patternAction, styles.playAction, isPlaying && styles.disabled]}
                   >
                     <Ionicons name="play" size={20} color="white" />
                   </TouchableOpacity>
                   <TouchableOpacity
+                    onPress={() => exportPattern(pattern)}
+                    style={[styles.patternAction, styles.exportAction]}
+                  >
+                    <Ionicons name="download" size={20} color="white" />
+                  </TouchableOpacity>
+                  <TouchableOpacity
                     onPress={() => deletePattern(pattern.id)}
-                    style={styles.deleteButton}
+                    style={[styles.patternAction, styles.deleteAction]}
                   >
                     <Ionicons name="trash" size={20} color="white" />
                   </TouchableOpacity>
@@ -399,20 +538,19 @@ export default function HomeScreen() {
           ))
         )}
       </ScrollView>
-    </View>
+    </SafeAreaView>
   );
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="light-content" backgroundColor="#1a1a2e" />
-      
+    <View style={styles.app}>
       {currentPage === 'beatbox' ? renderBeatBox() : renderPatterns()}
 
       {/* Save Pattern Modal */}
       <Modal
         visible={showSaveModal}
         transparent
-        animationType="slide"
+        animationType="fade"
+        onRequestClose={() => setShowSaveModal(false)}
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -420,192 +558,292 @@ export default function HomeScreen() {
             <TextInput
               style={styles.modalInput}
               placeholder="Enter pattern name..."
+              placeholderTextColor="#94a3b8"
               value={patternName}
               onChangeText={setPatternName}
               autoFocus
             />
-            <View style={styles.modalButtons}>
+            <View style={styles.modalActions}>
               <TouchableOpacity
                 onPress={() => setShowSaveModal(false)}
                 style={[styles.modalButton, styles.cancelButton]}
               >
-                <Text style={styles.cancelButtonText}>Cancel</Text>
+                <Text style={styles.modalButtonText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 onPress={savePattern}
                 style={[styles.modalButton, styles.saveButton]}
               >
-                <Text style={styles.saveButtonText}>Save</Text>
+                <Text style={styles.modalButtonText}>Save Pattern</Text>
               </TouchableOpacity>
             </View>
           </View>
         </View>
       </Modal>
-    </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
+  app: {
     flex: 1,
-    backgroundColor: '#1a1a2e',
   },
   container: {
     flex: 1,
-    backgroundColor: '#1a1a2e',
+    backgroundColor: '#0f172a',
   },
   header: {
     alignItems: 'center',
-    paddingVertical: 30,
-    paddingHorizontal: 20,
+    paddingVertical: 32,
+    paddingHorizontal: 16,
   },
-  headerTitle: {
-    fontSize: 36,
+  title: {
+    fontSize: 32,
     fontWeight: 'bold',
-    color: 'white',
-    marginBottom: 8,
+    color: '#a855f7',
+    marginBottom: 4,
   },
-  headerSubtitle: {
-    fontSize: 16,
-    color: '#888',
-    marginBottom: 20,
+  subtitle: {
+    fontSize: 12,
+    color: '#c084fc',
+    marginBottom: 16,
   },
-  beatVisualization: {
-    width: width * 0.8,
+  description: {
+    fontSize: 14,
+    color: '#94a3b8',
+    marginBottom: 24,
+    textAlign: 'center',
+  },
+  visualizationContainer: {
+    width: screenWidth * 0.8,
     height: 4,
-    backgroundColor: '#667eea',
+    backgroundColor: '#374151',
     borderRadius: 2,
+    overflow: 'hidden',
   },
-  padsContainer: {
+  visualizationBar: {
+    height: '100%',
+    backgroundColor: '#a855f7',
+  },
+  controls: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-around',
-    paddingHorizontal: 20,
-    marginTop: 20,
-  },
-  padWrapper: {
-    width: width * 0.4,
-    marginBottom: 20,
-  },
-  pad: {
-    width: '100%',
-    height: 100,
-    borderRadius: 20,
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 8,
+    gap: 24,
+    paddingHorizontal: 16,
+    marginBottom: 16,
+  },
+  controlGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  controlButton: {
+    padding: 8,
+    backgroundColor: '#1e293b',
+    borderRadius: 20,
+  },
+  controlLabel: {
+    color: 'white',
+    fontSize: 12,
+  },
+  categoryContainer: {
+    marginBottom: 16,
+  },
+  categoryContent: {
+    paddingHorizontal: 16,
+    gap: 8,
+  },
+  categoryButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: '#1e293b',
+    borderRadius: 20,
+  },
+  categoryButtonActive: {
+    backgroundColor: '#8B5CF6',
+  },
+  categoryText: {
+    color: '#94a3b8',
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  categoryTextActive: {
+    color: 'white',
+  },
+  padsContainer: {
+    flex: 1,
+    paddingHorizontal: 16,
+  },
+  padsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 16,
+    justifyContent: 'space-between',
+  },
+  pad: {
+    width: (screenWidth - 48) / 2,
+    height: 96,
+    borderRadius: 16,
+    marginBottom: 16,
+  },
+  padActive: {
+    transform: [{ scale: 0.95 }],
+  },
+  padGradient: {
+    flex: 1,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  padContent: {
+    alignItems: 'center',
   },
   padText: {
     color: 'white',
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: 'bold',
-    marginTop: 8,
+    marginTop: 4,
   },
-  controlsContainer: {
+  padOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderRadius: 16,
+  },
+  recordingControls: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
-    paddingHorizontal: 40,
-    marginTop: 30,
-  },
-  controlButton: {
-    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 32,
+    paddingVertical: 24,
+    paddingHorizontal: 16,
   },
   recordButton: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: '#e74c3c',
-    justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 8,
+    paddingVertical: 16,
+    paddingHorizontal: 24,
+    borderRadius: 16,
+    minWidth: 100,
+  },
+  recordButtonRecord: {
+    backgroundColor: '#8B5CF6',
+  },
+  recordButtonStop: {
+    backgroundColor: '#EF4444',
   },
   patternsButton: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: '#9b59b6',
-    justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 8,
+    paddingVertical: 16,
+    paddingHorizontal: 24,
+    borderRadius: 16,
+    backgroundColor: '#6366F1',
+    minWidth: 100,
   },
-  controlText: {
+  recordButtonText: {
     color: 'white',
     fontSize: 12,
     fontWeight: 'bold',
+    marginTop: 4,
   },
-  patternsPreview: {
-    marginTop: 30,
-    paddingHorizontal: 20,
+  recentPatterns: {
+    paddingHorizontal: 16,
+    marginBottom: 16,
   },
-  sectionTitle: {
+  recentTitle: {
     fontSize: 18,
     fontWeight: 'bold',
     color: 'white',
-    marginBottom: 15,
+    marginBottom: 12,
   },
-  patternCard: {
-    marginRight: 15,
+  recentPattern: {
+    marginRight: 12,
   },
-  patternCardGradient: {
-    paddingHorizontal: 15,
-    paddingVertical: 10,
-    borderRadius: 20,
+  recentPatternGradient: {
     flexDirection: 'row',
     alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 12,
+    gap: 8,
   },
-  patternCardText: {
+  recentPatternText: {
     color: 'white',
     fontSize: 12,
-    fontWeight: 'bold',
-    marginLeft: 8,
+    fontWeight: '500',
+  },
+  disabled: {
+    opacity: 0.5,
+  },
+  footer: {
+    alignItems: 'center',
+    paddingVertical: 24,
+  },
+  footerText: {
+    color: '#64748b',
+    fontSize: 12,
+  },
+  footerSubText: {
+    color: '#64748b',
+    fontSize: 10,
+    marginTop: 4,
   },
   patternsHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 20,
-    backgroundColor: 'white',
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    gap: 16,
   },
   backButton: {
-    marginRight: 15,
+    padding: 8,
+    backgroundColor: '#1e293b',
+    borderRadius: 20,
   },
   patternsTitle: {
-    fontSize: 24,
+    fontSize: 20,
     fontWeight: 'bold',
-    color: '#333',
+    color: 'white',
+    flex: 1,
+  },
+  patternCount: {
+    backgroundColor: '#8B5CF6',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  patternCountText: {
+    color: 'white',
+    fontSize: 12,
   },
   patternsList: {
     flex: 1,
-    paddingHorizontal: 20,
+    padding: 16,
   },
   emptyState: {
-    flex: 1,
-    justifyContent: 'center',
     alignItems: 'center',
-    paddingTop: 100,
+    paddingVertical: 80,
   },
-  emptyText: {
+  emptyTitle: {
     fontSize: 18,
-    color: '#666',
-    marginTop: 20,
+    color: '#94a3b8',
+    marginTop: 16,
+    marginBottom: 8,
   },
-  emptySubtext: {
+  emptySubtitle: {
     fontSize: 14,
-    color: '#999',
-    marginTop: 8,
+    color: '#64748b',
   },
-  patternItem: {
-    marginBottom: 15,
+  patternCard: {
+    marginBottom: 16,
+    borderRadius: 16,
+    overflow: 'hidden',
   },
-  patternItemGradient: {
+  patternCardGradient: {
+    padding: 24,
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 20,
-    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
   },
   patternInfo: {
     flex: 1,
@@ -614,84 +852,77 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: 'bold',
     color: 'white',
+    marginBottom: 4,
   },
   patternDetails: {
     fontSize: 12,
-    color: 'rgba(255,255,255,0.8)',
-    marginTop: 4,
+    color: '#94a3b8',
   },
   patternActions: {
     flexDirection: 'row',
+    gap: 8,
   },
-  playButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 10,
+  patternAction: {
+    padding: 12,
+    borderRadius: 12,
   },
-  deleteButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(231,76,60,0.8)',
-    justifyContent: 'center',
-    alignItems: 'center',
+  playAction: {
+    backgroundColor: '#10B981',
+  },
+  exportAction: {
+    backgroundColor: '#3B82F6',
+  },
+  deleteAction: {
+    backgroundColor: '#EF4444',
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
     justifyContent: 'center',
     alignItems: 'center',
+    paddingHorizontal: 16,
   },
   modalContent: {
-    backgroundColor: 'white',
-    borderRadius: 20,
-    padding: 30,
-    width: width * 0.8,
-    alignItems: 'center',
+    backgroundColor: '#1e293b',
+    borderRadius: 16,
+    padding: 24,
+    width: '100%',
+    maxWidth: 400,
   },
   modalTitle: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: 'bold',
-    marginBottom: 20,
-    color: '#333',
+    color: 'white',
+    marginBottom: 16,
+    textAlign: 'center',
   },
   modalInput: {
-    width: '100%',
-    borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 10,
-    padding: 15,
+    backgroundColor: '#374151',
+    borderRadius: 12,
+    padding: 12,
+    color: 'white',
     fontSize: 16,
-    marginBottom: 20,
+    marginBottom: 24,
   },
-  modalButtons: {
+  modalActions: {
     flexDirection: 'row',
-    width: '100%',
+    gap: 12,
   },
   modalButton: {
     flex: 1,
-    padding: 15,
-    borderRadius: 10,
+    padding: 12,
+    borderRadius: 12,
     alignItems: 'center',
   },
   cancelButton: {
-    backgroundColor: '#f8f8f8',
-    marginRight: 10,
+    backgroundColor: '#4b5563',
   },
   saveButton: {
-    backgroundColor: '#667eea',
-    marginLeft: 10,
+    backgroundColor: '#8B5CF6',
   },
-  cancelButtonText: {
-    color: '#666',
-    fontWeight: 'bold',
-  },
-  saveButtonText: {
+  modalButtonText: {
     color: 'white',
-    fontWeight: 'bold',
+    fontSize: 16,
+    fontWeight: '500',
   },
 });
