@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "a0-project",
-    "slug": "snack-ce3d141f-e55c-4b94-ba2e-288380813ca7",
+    "name": "BeatBox Studio",
+    "slug": "beatbox-studio-app",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -24,6 +24,6 @@
     "web": {
       "favicon": "./assets/favicon.png"
     },
-    "description": "Quickly generate React Native components with AI"
+    "description": "Create and perform amazing beatbox rhythms with recording and playback features"
   }
 }
